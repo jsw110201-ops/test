@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Tetris with Effects</title>
+<style>
+  body {
+    background: #111;
+    color: white;
+    font-family: Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+  }
+  .container {
+    display: flex;
+    gap: 20px;
+  }
+  canvas {
+    background: #000;
+    border: 3px solid #555;
+  }
+  .info {
+    min-width: 150px;
+  }
+  .info h2 {
+    margin: 10px 0;
+  }
+  .score-float {
+    position: absolute;
+    color: yellow;
+    font-size: 20px;
+    font-weight: bold;
+    pointer-events: none;
+    transition: all 0.3s ease-out;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div style="position:relative;">
+    <canvas id="tetris" width="240" height="400"></canvas>
+  </div>
+  <div class="info">
+    <h2>점수: <span id="score">0</span></h2>
+    <h2>레벨: <span id="level">1</span></h2>
+    <h2>콤보: <span id="combo">0</span></h2>
+    <h2>최고 기록</h2>
+    <div id="highScore">0</div>
+  </div>
+</div>
+
+<audio id="lineSound" src="https://freesound.org/data/previews/331/331912_3248244-lq.mp3"></audio>
+<audio id="moveSound" src="https://freesound.org/data/previews/256/256113_4486188-lq.mp3"></audio>
+<audio id="rotateSound" src="https://freesound.org/data/previews/256/256111_4486188-lq.mp3"></audio>
+<audio id="gameOverSound" src="https://freesound.org/data/previews/331/331912_3248244-lq.mp3"></audio>
+
+<script>
+const canvas = document.getElementById('tetris');
+const context = canvas.getContext('2d');
+context.scale(20, 20);
+
+const scoreEl = document.getElementById('score');
+const levelEl = document.getElementById('level');
+const comboEl = document.getElementById('combo');
+const highScoreEl = document.getElementById('highScore');
+
+const lineSound = document.getElementById('lineSound');
+const moveSound = document.getElementById('moveSound');
+const rotateSound = document.getElementById('rotateSound');
+const gameOverSound = document.getElementById('gameOverSound');
+
+let highScore = localStorage.getItem('tetrisHighScore') || 0;
+highScoreEl.innerText = highScore;
+
+const arena = createMatrix(12, 20);
+const colors = [null,'#FF0D72','#0DC2FF','#0DFF72','#F538FF','#FF8E0D','#FFE138','#3877FF'];
+
+const player = { pos:{x:0,y:0}, matrix:null, score:0, level:1, lines:0, combo:0 };
+
+function createMatrix(w,h){ return Array.from({length:h},()=>new Array(w).fill(0)); }
+
+function createPiece(type){
+  const pieces = {
+    T:[[0,1,0],[1,1,1],[0,0,0]],
+    O:[[2,2],[2,2]],
+    L:[[0,3,0],[0,3,0],[0,3,3]],
+    J:[[0,4,0],[0,4,0],[4,4,0]],
+    I:[[0,5,0,0],[0,5,0,0],[0,5,0,0],[0,5,0,0]],
+    S:[[0,6,6],[6,6,0],[0,0,0]],
+    Z:[[7,7,0],[0,7,7],[0,0,0]]
+  }; return pieces[type];
+}
+
+function drawMatrix(matrix,offset){
+  matrix.forEach((row,y)=>{
+    row.forEach((value,x)=>{
+      if(value!==0){
+        context.fillStyle=colors[value];
+        context.fillRect(x+offset.x,y+offset.y,1,1);
+      }
+    });
+  });
+}
+
+let shakeOffset = {x:0,y:0};
+
+function draw(){
+  context.fillStyle='#000';
+  context.fillRect(0,0,canvas.width,canvas.height);
+  context.save();
+  context.translate(shakeOffset.x, shakeOffset.y);
+  drawMatrix(arena,{x:0,y:0});
+  drawMatrix(player.matrix,player.pos);
+  context.restore();
+}
+
+function collide(arena,player){
+  return player.matrix.some((row,y)=>row.some((value,x)=>value!==0 &&
+    (arena[y+player.pos.y]&&arena[y+player.pos.y][x+player.pos.x])!==0
+  ));
+}
+
+function merge(arena,player){
+  player.matrix.forEach((row,y)=>row.forEach((value,x)=>{ if(value!==0) arena[y+player.pos.y][x+player.pos.x]=value;}));
+}
+
+function arenaSweep(){
+  let rowCount=0;
+  outer: for(let y=arena.length-1;y>=0;y--){
+    for(let x=0;x<arena[y].length;x++){ if(arena[y][x]===0) continue outer; }
+    arena.splice(y,1); arena.unshift(new Array(arena[0].length).fill(0)); rowCount++; y++;
+  }
+  if(rowCount>0){
+    player.combo++;
+    const lineScore=[0,100,300,500,800];
+    let gainedScore=(lineScore[rowCount]*player.level)+(player.combo*50);
+    player.score+=gainedScore;
+    player.lines+=rowCount;
+    showFloatingScore(gainedScore);
+    shakeScreen();
+    lineSound.currentTime=0; lineSound.play();
+    if(player.lines>=player.level*5){ player.level++; dropInterval=Math.max(150,dropInterval-100);}
+  } else { player.combo=0; }
+  updateUI();
+}
+
+function rotate(matrix,dir){
+  for(let y=0;y<matrix.length;y++){ for(let x=0;x<y;x++){ [matrix[x][y],matrix[y][x]]=[matrix[y][x],matrix[x][y]]; } }
+  dir>0?matrix.forEach(r=>r.reverse()):matrix.reverse();
+}
+
+function playerReset(){
+  const pieces='ILJOTSZ';
+  player.matrix=createPiece(pieces[Math.floor(Math.random()*pieces.length)]);
+  player.pos.y=0;
+  player.pos.x=(arena[0].length/2|0)-(player.matrix[0].length/2|0);
+  if(collide(arena,player)){
+    if(player.score>highScore){ highScore=player.score; localStorage.setItem('tetrisHighScore',highScore);}
+    arena.forEach(r=>r.fill(0));
+    Object.assign(player,{score:0,level:1,lines:0,combo:0});
+    dropInterval=1000;
+    gameOverSound.currentTime=0; gameOverSound.play();
+    alert('Game Over');
+    updateUI();
+  }
+}
+
+function playerDrop(){
+  player.pos.y++;
+  if(collide(arena,player)){
+    player.pos.y--; merge(arena,player); arenaSweep(); playerReset();
+  }
+  dropCounter=0;
+}
+
+function hardDrop(){
+  while(!collide(arena,player)) player.pos.y++;
+  player.pos.y--; merge(arena,player); arenaSweep(); playerReset();
+}
+
+function updateUI(){ scoreEl.innerText=player.score; levelEl.innerText=player.level; comboEl.innerText=player.combo; highScoreEl.innerText=highScore; }
+
+let dropCounter=0; let dropInterval=1000; let lastTime=0;
+
+function update(time=0){
+  const delta=time-lastTime;
+  lastTime=time;
+  dropCounter+=delta;
+  if(dropCounter>dropInterval) playerDrop();
+  if(shakeOffset.x!==0 || shakeOffset.y!==0){ shakeOffset.x*=0.5; shakeOffset.y*=0.5; if(Math.abs(shakeOffset.x)<0.5) shakeOffset.x=0; if(Math.abs(shakeOffset.y)<0.5) shakeOffset.y=0; }
+  draw();
+  requestAnimationFrame(update);
+}
+
+function shakeScreen(){ shakeOffset.x=(Math.random()-0.5)*8; shakeOffset.y=(Math.random()-0.5)*8; }
+
+function showFloatingScore(score){
+  const floatEl=document.createElement('div');
+  floatEl.className='score-float';
+  floatEl.innerText='+'+score;
+  document.body.appendChild(floatEl);
+  const rect=canvas.getBoundingClientRect();
+  floatEl.style.left=(rect.left+canvas.width/2)+'px';
+  floatEl.style.top=(rect.top+canvas.height/2)+'px';
+  setTimeout(()=>{ floatEl.style.top=(rect.top+canvas.height/2-30)+'px'; floatEl.style.opacity='0'; },10);
+  setTimeout(()=>{ document.body.removeChild(floatEl); },300);
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft'){ player.pos.x--; moveSound.currentTime=0; moveSound.play(); if(collide(arena,player)) player.pos.x++; }
+  if(e.key==='ArrowRight'){ player.pos.x++; moveSound.currentTime=0; moveSound.play(); if(collide(arena,player)) player.pos.x--; }
+  if(e.key==='ArrowDown') playerDrop();
+  if(e.key==='ArrowUp'){ rotate(player.matrix,1); rotateSound.currentTime=0; rotateSound.play(); if(collide(arena,player)) rotate(player.matrix,-1);}
+  if(e.code==='Space') hardDrop();
+});
+
+playerReset();
+update();
+</script>
+
+</body>
+</html>
